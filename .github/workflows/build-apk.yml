@@ -1,11 +1,9 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
+  push:
+    branches: [ main, master, 'claude/**' ]
 
 jobs:
   build:
@@ -19,7 +17,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
@@ -41,7 +38,8 @@ jobs:
 
       - name: Add Android platform
         run: npx cap add android
-        continue-on-error: true
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: Sync Capacitor
         run: npx cap sync android
@@ -51,11 +49,14 @@ jobs:
 
       - name: Build Debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: vampire-roguelike-debug
+          name: vampire-roguelike-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          retention-days: 7
