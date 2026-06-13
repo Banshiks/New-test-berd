@@ -4,6 +4,7 @@ plugins {
 }
 
 android {
+    namespace "com.learn.pathtracer"
     compileSdk 34
 
     defaultConfig {
