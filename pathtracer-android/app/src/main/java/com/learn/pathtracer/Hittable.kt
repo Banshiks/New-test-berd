@@ -227,3 +227,69 @@ class BVHNode(objects: List<Hittable>, start: Int, end: Int) : Hittable {
 
     override fun boundingBox() = box
 }
+
+// ─────────────────────────────────────────────
+// Translate — смещение объекта в пространстве.
+// Вместо того чтобы двигать сам объект,
+// мы сдвигаем луч в обратную сторону.
+// ─────────────────────────────────────────────
+class Translate(val obj: Hittable, val offset: Vec3) : Hittable {
+    override fun hit(ray: Ray, tMin: Double, tMax: Double): HitRecord? {
+        val moved = Ray(ray.origin - offset, ray.direction)
+        val hit = obj.hit(moved, tMin, tMax) ?: return null
+        return HitRecord(hit.t, hit.point + offset, hit.normal, hit.material, hit.frontFace)
+    }
+    override fun boundingBox(): AABB? {
+        val b = obj.boundingBox() ?: return null
+        return AABB(b.min + offset, b.max + offset)
+    }
+}
+
+// ─────────────────────────────────────────────
+// RotateY — поворот объекта вокруг оси Y.
+//
+// Классический приём: вместо поворота объекта
+// поворачиваем луч в обратную сторону (в object space),
+// затем поворачиваем нормаль обратно в world space.
+// Именно так работают все рендереры — это Instance Transform.
+// ─────────────────────────────────────────────
+class RotateY(val obj: Hittable, angleDeg: Double) : Hittable {
+    private val sinT: Double
+    private val cosT: Double
+    private val bbox: AABB?
+
+    init {
+        val rad = Math.toRadians(angleDeg)
+        sinT = kotlin.math.sin(rad)
+        cosT = kotlin.math.cos(rad)
+        // Пересчитываем AABB — обходим все 8 углов куба и находим новые min/max
+        bbox = obj.boundingBox()?.let { b ->
+            var minP = Vec3(Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE)
+            var maxP = Vec3(-Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE)
+            for (i in 0..1) for (j in 0..1) for (k in 0..1) {
+                val x = i * b.max.x + (1 - i) * b.min.x
+                val y = j * b.max.y + (1 - j) * b.min.y
+                val z = k * b.max.z + (1 - k) * b.min.z
+                val rx = cosT * x + sinT * z
+                val rz = -sinT * x + cosT * z
+                minP = Vec3(minOf(minP.x, rx), minOf(minP.y, y), minOf(minP.z, rz))
+                maxP = Vec3(maxOf(maxP.x, rx), maxOf(maxP.y, y), maxOf(maxP.z, rz))
+            }
+            AABB(minP, maxP)
+        }
+    }
+
+    override fun hit(ray: Ray, tMin: Double, tMax: Double): HitRecord? {
+        // Переводим луч в object space (поворот в обратную сторону)
+        val o = Vec3(cosT * ray.origin.x - sinT * ray.origin.z, ray.origin.y, sinT * ray.origin.x + cosT * ray.origin.z)
+        val d = Vec3(cosT * ray.direction.x - sinT * ray.direction.z, ray.direction.y, sinT * ray.direction.x + cosT * ray.direction.z)
+        val hit = obj.hit(Ray(o, d), tMin, tMax) ?: return null
+        // Переводим точку и нормаль обратно в world space
+        val p = Vec3(cosT * hit.point.x + sinT * hit.point.z, hit.point.y, -sinT * hit.point.x + cosT * hit.point.z)
+        val n = Vec3(cosT * hit.normal.x + sinT * hit.normal.z, hit.normal.y, -sinT * hit.normal.x + cosT * hit.normal.z)
+        val frontFace = d.dot(n) < 0
+        return HitRecord(hit.t, p, if (frontFace) n else -n, hit.material, frontFace)
+    }
+
+    override fun boundingBox() = bbox
+}

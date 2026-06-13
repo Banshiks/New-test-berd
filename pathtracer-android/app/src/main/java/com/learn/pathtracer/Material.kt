@@ -57,6 +57,22 @@ class DiffuseLight(val color: Vec3) : Material {
     override fun emitted(): Vec3 = color
 }
 
+// ─────────────────────────────────────────────
+// CheckerTexture — процедурная шахматная текстура.
+// Цвет зависит от координат точки пересечения.
+// sin(x)*sin(y)*sin(z) < 0 → одна клетка, иначе другая.
+// ─────────────────────────────────────────────
+class CheckerLambertian(val even: Vec3, val odd: Vec3, val scale: Double = 1.0) : Material {
+    override fun scatter(ray: Ray, hit: HitRecord): Pair<Ray, Vec3> {
+        val s = hit.point * scale
+        val checker = kotlin.math.sin(s.x) * kotlin.math.sin(s.y) * kotlin.math.sin(s.z)
+        val albedo = if (checker < 0) odd else even
+        var dir = hit.normal + Vec3.randomUnitVector()
+        if (dir.nearZero()) dir = hit.normal
+        return Pair(Ray(hit.point, dir), albedo)
+    }
+}
+
 fun reflect(v: Vec3, n: Vec3): Vec3 = v - n * (2.0 * v.dot(n))
 
 fun refract(uv: Vec3, n: Vec3, eta: Double): Vec3 {
