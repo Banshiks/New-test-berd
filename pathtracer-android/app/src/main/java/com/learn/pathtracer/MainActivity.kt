@@ -7,13 +7,22 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
 
+// ─────────────────────────────────────────────
+// MainActivity — UI для progressive path tracer'а.
+//
+// UX: нажимаем "Старт" → рендер начинается.
+//   Картинка обновляется после каждого сэмпла.
+//   Счётчик показывает сколько сэмплов накоплено.
+//   "Стоп" → рендер останавливается (coroutine cancel).
+//   "Старт" снова → сброс аккумулятора, новый рендер.
+// ─────────────────────────────────────────────
 class MainActivity : AppCompatActivity() {
 
     private lateinit var imageView: ImageView
-    private lateinit var progressBar: ProgressBar
     private lateinit var progressText: TextView
-    private lateinit var renderButton: Button
-    private lateinit var qualityGroup: RadioGroup
+    private lateinit var startButton: Button
+    private lateinit var stopButton: Button
+    private lateinit var sizeGroup: RadioGroup
 
     private var renderJob: Job? = null
 
@@ -22,55 +31,53 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         imageView    = findViewById(R.id.imageView)
-        progressBar  = findViewById(R.id.progressBar)
         progressText = findViewById(R.id.progressText)
-        renderButton = findViewById(R.id.renderButton)
-        qualityGroup = findViewById(R.id.qualityGroup)
+        startButton  = findViewById(R.id.startButton)
+        stopButton   = findViewById(R.id.stopButton)
+        sizeGroup    = findViewById(R.id.sizeGroup)
 
-        renderButton.setOnClickListener { startRender() }
+        startButton.setOnClickListener { startRender() }
+        stopButton.setOnClickListener  { stopRender()  }
+
+        stopButton.isEnabled = false
+        progressText.text = "Cornell Box Path Tracer"
     }
 
     private fun startRender() {
-        // Отменяем предыдущий рендер если был
         renderJob?.cancel()
 
-        val (samples, label) = when (qualityGroup.checkedRadioButtonId) {
-            R.id.radioFast   -> Pair(4,   "Быстро (4 spp)")
-            R.id.radioMedium -> Pair(16,  "Среднее (16 spp)")
-            R.id.radioHigh   -> Pair(64,  "Высокое (64 spp)")
-            else             -> Pair(4,   "Быстро (4 spp)")
+        val (width, height) = when (sizeGroup.checkedRadioButtonId) {
+            R.id.radioSmall  -> Pair(240, 240)
+            R.id.radioMedium -> Pair(400, 400)
+            R.id.radioLarge  -> Pair(600, 600)
+            else             -> Pair(240, 240)
         }
 
-        // Размер рендера: меньше = быстрее (для обучения хватит 320x240)
-        val width  = 480
-        val height = 270
-
-        renderButton.isEnabled = false
-        renderButton.text = "Рендерится..."
-        progressBar.visibility = View.VISIBLE
-        progressBar.progress = 0
+        startButton.isEnabled = false
+        stopButton.isEnabled  = true
+        progressText.text = "Рендеринг..."
 
         renderJob = lifecycleScope.launch {
-            val bitmap = PathTracer.render(
-                width          = width,
-                height         = height,
-                samplesPerPixel = samples,
-                maxDepth       = 8,
-                onProgress     = { bmp, percent ->
-                    // Обновляем картинку прямо во время рендера!
-                    imageView.setImageBitmap(bmp.copy(bmp.config, false))
-                    progressBar.progress = percent
-                    progressText.text = "$label — $percent%"
+            PathTracer.renderProgressive(
+                width    = width,
+                height   = height,
+                maxDepth = 12,
+                onSample = { bitmap, sampleCount ->
+                    imageView.setImageBitmap(bitmap)
+                    progressText.text = "Сэмплов: $sampleCount  |  ${width}×${height}"
                 }
             )
-
-            // Финальное обновление
-            imageView.setImageBitmap(bitmap)
-            progressBar.visibility = View.GONE
-            progressText.text = "$label — готово!"
-            renderButton.isEnabled = true
-            renderButton.text = "Рендерить"
+            // Сюда попадаем только при cancel (кнопка Стоп)
+            progressText.text = "${progressText.text}  — остановлено"
+            startButton.isEnabled = true
+            stopButton.isEnabled  = false
         }
+    }
+
+    private fun stopRender() {
+        renderJob?.cancel()
+        startButton.isEnabled = true
+        stopButton.isEnabled  = false
     }
 
     override fun onDestroy() {

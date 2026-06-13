@@ -9,14 +9,14 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Path Tracer"
+        android:text="Cornell Box Path Tracer"
         android:textColor="#e0e0e0"
-        android:textSize="22sp"
+        android:textSize="20sp"
         android:textStyle="bold"
         android:gravity="center"
         android:paddingBottom="12dp" />
 
-    <!-- Холст — здесь появляется рендер -->
+    <!-- Холст рендера — заполняет всё свободное пространство -->
     <ImageView
         android:id="@+id/imageView"
         android:layout_width="match_parent"
@@ -26,16 +26,7 @@
         android:background="#0d0d1a"
         android:contentDescription="Rendered scene" />
 
-    <!-- Прогресс-бар — виден во время рендера -->
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="@android:style/Widget.ProgressBar.Horizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:max="100"
-        android:visibility="gone" />
-
+    <!-- Счётчик сэмплов и размер -->
     <TextView
         android:id="@+id/progressText"
         android:layout_width="match_parent"
@@ -43,49 +34,68 @@
         android:textColor="#aaaaaa"
         android:textSize="13sp"
         android:gravity="center"
-        android:paddingTop="4dp"
-        android:text="Выберите качество и нажмите Рендерить" />
+        android:paddingTop="6dp"
+        android:paddingBottom="4dp"
+        android:text="Cornell Box Path Tracer" />
 
-    <!-- Выбор качества -->
+    <!-- Выбор размера рендера -->
     <RadioGroup
-        android:id="@+id/qualityGroup"
+        android:id="@+id/sizeGroup"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center"
-        android:paddingTop="8dp">
+        android:paddingTop="4dp">
 
         <RadioButton
-            android:id="@+id/radioFast"
+            android:id="@+id/radioSmall"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Быстро"
+            android:text="240×240"
             android:textColor="#cccccc"
             android:checked="true"
-            android:paddingEnd="16dp" />
+            android:paddingEnd="12dp" />
 
         <RadioButton
             android:id="@+id/radioMedium"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Среднее"
+            android:text="400×400"
             android:textColor="#cccccc"
-            android:paddingEnd="16dp" />
+            android:paddingEnd="12dp" />
 
         <RadioButton
-            android:id="@+id/radioHigh"
+            android:id="@+id/radioLarge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Высокое"
+            android:text="600×600"
             android:textColor="#cccccc" />
     </RadioGroup>
 
-    <Button
-        android:id="@+id/renderButton"
+    <!-- Кнопки Старт / Стоп -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Рендерить"
-        android:textSize="16sp" />
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+
+        <Button
+            android:id="@+id/startButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:text="▶  Старт"
+            android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/stopButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="■  Стоп"
+            android:textSize="15sp" />
+    </LinearLayout>
 
 </LinearLayout>

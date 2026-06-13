@@ -4,194 +4,198 @@ import android.graphics.Bitmap
 import kotlinx.coroutines.*
 import kotlin.math.sqrt
 
-/**
- * Ядро path tracer'а.
- *
- * Главная идея: для каждого пикселя пускаем много лучей (samplesPerPixel),
- * усредняем цвета — получаем плавную картинку без "шума".
- */
+// ─────────────────────────────────────────────
+// PathTracer — ядро рендерера.
+//
+// Архитектура:
+//   renderProgressive() — публичный метод, запускает бесконечную петлю
+//   накопления сэмплов. Каждая итерация добавляет 1 spp и обновляет bitmap.
+//
+//   rayColor() — рекурсивная трассировка луча.
+//   Ключевое отличие от простого raycaster'а:
+//   луч не просто проверяет "попал ли в объект", а "отскакивает" много раз,
+//   собирая свет по пути. Именно это даёт мягкие тени, ГИ и каустики.
+// ─────────────────────────────────────────────
 object PathTracer {
 
-    /**
-     * Цвет луча — рекурсивная функция, суть всего path tracer'а.
-     *
-     * Алгоритм:
-     * 1. Пускаем луч в сцену
-     * 2. Если попал в объект — берём его материал, получаем новый луч
-     * 3. Рекурсивно считаем цвет нового луча
-     * 4. Умножаем на attenuation материала
-     * 5. Если ни во что не попали — возвращаем цвет неба (фон)
-     *
-     * depth — глубина рекурсии: сколько раз луч может "отскочить"
-     */
+    // ─────────────────────────────────────────────
+    // rayColor — сердце path tracer'а.
+    //
+    // Для каждого луча:
+    //  1. Ищем ближайшее пересечение со сценой
+    //  2. Если объект светится — добавляем его вклад (emitted)
+    //  3. Если материал рассеивает луч — пускаем новый и умножаем цвета
+    //  4. Рекурсия до depth=0 (луч "умер") или до промаха (черный фон у Cornell Box)
+    //
+    // Важно: фон чёрный, свет исходит ТОЛЬКО от DiffuseLight-прямоугольника на потолке.
+    // Именно так устроен классический Cornell Box.
+    // ─────────────────────────────────────────────
     private fun rayColor(ray: Ray, world: Hittable, depth: Int): Vec3 {
-        // Достигли предела отскоков — свет полностью поглощён
         if (depth <= 0) return Vec3.ZERO
 
-        // tMin = 0.001 чтобы избежать "shadow acne" — ложного самопересечения
+        // tMin = 0.001 — защита от "shadow acne" (ложного самопересечения из-за float-ошибок)
         val hit = world.hit(ray, 0.001, Double.MAX_VALUE)
 
-        if (hit != null) {
-            val scattered = hit.material.scatter(ray, hit)
-            return if (scattered != null) {
-                val (newRay, attenuation) = scattered
-                // Цвет = цвет материала * цвет того, что видит отражённый луч
-                attenuation * rayColor(newRay, world, depth - 1)
-            } else {
-                Vec3.ZERO  // материал поглотил луч
-            }
-        }
+        if (hit == null) return Vec3.ZERO  // фон чёрный — Cornell Box замкнут
 
-        // Фон: градиент от белого (низ) до голубого (верх) — имитация неба
-        val unitDir = ray.direction.normalize()
-        val t = 0.5 * (unitDir.y + 1.0)  // преобразуем y ∈ [-1,1] → t ∈ [0,1]
-        val white = Vec3(1.0, 1.0, 1.0)
-        val blue  = Vec3(0.5, 0.7, 1.0)
-        return white * (1.0 - t) + blue * t  // линейная интерполяция (lerp)
+        // Свет от поверхности самой (area light)
+        val emitted = hit.material.emitted()
+
+        // Рассеяние — получаем новый луч и коэффициент ослабления
+        val scattered = hit.material.scatter(ray, hit)
+            ?: return emitted  // нет рассеяния → только свечение
+
+        val (newRay, attenuation) = scattered
+        // Рекурсивно: emitted + то что видит рассеянный луч * attenuation материала
+        return emitted + attenuation * rayColor(newRay, world, depth - 1)
     }
 
-    /**
-     * Рендерит сцену в Bitmap асинхронно, построчно.
-     * onProgress вызывается после каждой строки — для обновления UI.
-     */
-    suspend fun render(
+    // ─────────────────────────────────────────────
+    // Progressive rendering — накапливаем сэмплы бесконечно.
+    //
+    // Идея: вместо того чтобы сразу рендерить N spp,
+    // накапливаем каждый новый сэмпл поверх предыдущих в массиве Double.
+    // После каждого прохода делим на количество сэмплов → усредняем → показываем.
+    // Картинка улучшается непрерывно: сначала зернистая, потом всё чище.
+    //
+    // Это именно то, как работают production path tracer'ы (Cycles, Arnold, etc.)
+    // ─────────────────────────────────────────────
+    suspend fun renderProgressive(
         width: Int,
         height: Int,
-        samplesPerPixel: Int = 10,
-        maxDepth: Int = 8,
-        onProgress: (Bitmap, Int) -> Unit
-    ): Bitmap = withContext(Dispatchers.Default) {
+        maxDepth: Int = 12,
+        onSample: (Bitmap, Int) -> Unit  // (bitmap, sampleCount)
+    ) = withContext(Dispatchers.Default) {
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val aspectRatio = width.toDouble() / height
 
-        // --- Сцена ---
-        val world = buildScene()
+        // Аккумуляторы цветов — суммируем все сэмплы сюда
+        val accumR = DoubleArray(width * height)
+        val accumG = DoubleArray(width * height)
+        val accumB = DoubleArray(width * height)
 
-        // --- Камера ---
+        // ─────────────────────────────────────────────
+        // Cornell Box сцена + BVH ускорение
+        //
+        // Cornell Box — стандартный тест-сцена для path tracer'ов с 1984 г.
+        // Замкнутая комната: красная левая стена, зелёная правая, белые пол/потолок/задняя.
+        // Источник света — светящийся прямоугольник на потолке.
+        // Два белых куба внутри — один повёрнутый, но для простоты делаем axis-aligned.
+        // ─────────────────────────────────────────────
+        val scene = cornellBox()
+        val world = BVHNode(scene.objects, 0, scene.objects.size)
+
+        // Камера смотрит внутрь Cornell Box
+        // Cornell Box ориентация: комната от 0 до 555 по каждой оси
+        // Камера классически стоит далеко по Z, смотрит на -Z
         val camera = Camera(
-            lookFrom   = Vec3(3.0, 2.0, 5.0),
-            lookAt     = Vec3(0.0, 0.5, 0.0),
-            vUp        = Vec3(0.0, 1.0, 0.0),
-            vFov       = 40.0,
+            lookFrom    = Vec3(278.0, 278.0, -800.0),
+            lookAt      = Vec3(278.0, 278.0, 0.0),
+            vUp         = Vec3(0.0, 1.0, 0.0),
+            vFov        = 40.0,
             aspectRatio = aspectRatio,
-            aperture   = 0.05,
-            focusDist  = 5.5
+            aperture    = 0.0,   // нет DOF — Cornell Box тест без боке
+            focusDist   = 800.0
         )
 
-        // Рендерим построчно (сверху вниз)
-        for (j in height - 1 downTo 0) {
-            // Внутри строки — параллельно по пикселям
-            (0 until width).map { i ->
-                async {
-                    var pixelColor = Vec3.ZERO
+        var sampleCount = 0
 
-                    // Anti-aliasing: несколько лучей на пиксель со случайным сдвигом
-                    repeat(samplesPerPixel) {
+        // Бесконечный цикл накопления сэмплов — прерывается через coroutine cancellation
+        while (isActive) {
+            sampleCount++
+
+            // Каждый пиксель обрабатывается параллельно (Dispatchers.Default — пул потоков)
+            val results = (0 until height).flatMap { j ->
+                (0 until width).map { i ->
+                    async {
+                        // 1 случайный луч на пиксель за один проход
                         val u = (i + Math.random()) / (width - 1)
                         val v = (j + Math.random()) / (height - 1)
                         val ray = camera.getRay(u, v)
-                        pixelColor = pixelColor + rayColor(ray, world, maxDepth)
+                        val color = rayColor(ray, world, maxDepth)
+                        Triple(i, j, color)
                     }
-
-                    // Усредняем и применяем гамма-коррекцию (gamma=2: берём sqrt)
-                    // Без гамма-коррекции тёмные цвета выглядят слишком тёмными
-                    val color = gammaCorrect(pixelColor / samplesPerPixel.toDouble())
-                    Pair(i, color)
                 }
-            }.awaitAll().forEach { (i, color) ->
-                // Bitmap.y=0 — верх экрана, поэтому инвертируем j
-                bitmap.setPixel(i, height - 1 - j, color.toArgb())
+            }.awaitAll()
+
+            // Накапливаем в аккумуляторы
+            for ((i, j, color) in results) {
+                val idx = j * width + i
+                accumR[idx] += color.x
+                accumG[idx] += color.y
+                accumB[idx] += color.z
             }
 
-            // Сообщаем UI о прогрессе после каждой строки
-            val progress = ((height - j) * 100) / height
+            // Строим bitmap из усреднённых сэмплов
+            for (j in 0 until height) {
+                for (i in 0 until width) {
+                    val idx = j * width + i
+                    val avg = Vec3(
+                        accumR[idx] / sampleCount,
+                        accumG[idx] / sampleCount,
+                        accumB[idx] / sampleCount
+                    )
+                    // Гамма-коррекция (gamma=2: sqrt переводит линейный → sRGB)
+                    val corrected = Vec3(
+                        sqrt(avg.x.coerceIn(0.0, 1.0)),
+                        sqrt(avg.y.coerceIn(0.0, 1.0)),
+                        sqrt(avg.z.coerceIn(0.0, 1.0))
+                    )
+                    // Bitmap: Y=0 сверху, поэтому переворачиваем j
+                    bitmap.setPixel(i, height - 1 - j, corrected.toArgb())
+                }
+            }
+
+            val snap = bitmap.copy(bitmap.config, false)
             withContext(Dispatchers.Main) {
-                onProgress(bitmap, progress)
+                onSample(snap, sampleCount)
             }
         }
-
-        bitmap
     }
 
-    // Гамма-коррекция: приводим линейный цвет к sRGB
-    private fun gammaCorrect(color: Vec3): Vec3 = Vec3(
-        sqrt(color.x.coerceIn(0.0, 1.0)),
-        sqrt(color.y.coerceIn(0.0, 1.0)),
-        sqrt(color.z.coerceIn(0.0, 1.0))
-    )
-
-    // Конвертация Vec3 (0..1) → Android ARGB Int
-    private fun Vec3.toArgb(): Int {
-        val r = (x * 255.99).toInt()
-        val g = (y * 255.99).toInt()
-        val b = (z * 255.99).toInt()
-        return android.graphics.Color.rgb(r, g, b)
-    }
-
-    /**
-     * Учебная сцена: несколько сфер с разными материалами.
-     * Здесь можно экспериментировать — добавлять объекты, менять материалы!
-     */
-    private fun buildScene(): HittableList {
+    // ─────────────────────────────────────────────
+    // Cornell Box сцена
+    //
+    // Координаты взяты из оригинального описания Cornell Box (0..555).
+    //
+    // Rect(a0, a1, b0, b1, k, axis, mat):
+    //   axis=0 → YZ-плоскость (X=k) — боковые стены
+    //   axis=1 → XZ-плоскость (Y=k) — пол/потолок
+    //   axis=2 → XY-плоскость (Z=k) — задняя стена
+    // ─────────────────────────────────────────────
+    private fun cornellBox(): HittableList {
         val world = HittableList()
 
-        // Пол — большая сфера, имитирует плоскость
-        world.add(Sphere(
-            center   = Vec3(0.0, -100.5, -1.0),
-            radius   = 100.0,
-            material = Lambertian(Vec3(0.5, 0.5, 0.5))  // серый диффуз
-        ))
+        val red   = Lambertian(Vec3(0.65, 0.05, 0.05))
+        val white = Lambertian(Vec3(0.73, 0.73, 0.73))
+        val green = Lambertian(Vec3(0.12, 0.45, 0.15))
+        // Источник света: яркий белый, интенсивность 15 — достаточно для освещения комнаты
+        val light = DiffuseLight(Vec3(15.0, 15.0, 15.0))
 
-        // Центральная сфера — стекло
-        world.add(Sphere(
-            center   = Vec3(0.0, 0.5, 0.0),
-            radius   = 0.5,
-            material = Dielectric(1.5)
-        ))
+        // Стены
+        world.add(Rect(0.0, 555.0, 0.0, 555.0, 555.0, 0, green))   // правая (зелёная)
+        world.add(Rect(0.0, 555.0, 0.0, 555.0, 0.0,   0, red))     // левая (красная)
+        world.add(Rect(0.0, 555.0, 0.0, 555.0, 0.0,   1, white))   // пол
+        world.add(Rect(0.0, 555.0, 0.0, 555.0, 555.0, 1, white))   // потолок
+        world.add(Rect(0.0, 555.0, 0.0, 555.0, 555.0, 2, white))   // задняя стена
 
-        // Левая сфера — матовая, тёплый красный
-        world.add(Sphere(
-            center   = Vec3(-1.2, 0.5, 0.0),
-            radius   = 0.5,
-            material = Lambertian(Vec3(0.8, 0.2, 0.1))
-        ))
+        // Источник света на потолке (центр)
+        world.add(Rect(213.0, 343.0, 227.0, 332.0, 554.0, 1, light))
 
-        // Правая сфера — золотистый металл
-        world.add(Sphere(
-            center   = Vec3(1.2, 0.5, 0.0),
-            radius   = 0.5,
-            material = Metal(Vec3(0.8, 0.6, 0.2), fuzz = 0.1)
-        ))
-
-        // Маленькая сфера — тёмный матовый металл
-        world.add(Sphere(
-            center   = Vec3(0.0, 0.15, 0.8),
-            radius   = 0.15,
-            material = Metal(Vec3(0.3, 0.3, 0.3), fuzz = 0.5)
-        ))
-
-        // Несколько случайных маленьких сфер для интереса
-        val rng = java.util.Random(42)
-        for (i in -3..3) {
-            for (k in -3..3) {
-                val center = Vec3(
-                    i + 0.6 * rng.nextDouble(),
-                    0.15,
-                    k + 0.6 * rng.nextDouble() - 1.5
-                )
-                // Не создаём сферы слишком близко к главным
-                if ((center - Vec3(0.0, 0.5, 0.0)).length() < 0.9) continue
-
-                val mat: Material = when (rng.nextInt(3)) {
-                    0 -> Lambertian(Vec3(rng.nextDouble(), rng.nextDouble(), rng.nextDouble()))
-                    1 -> Metal(Vec3(0.5 + rng.nextDouble() * 0.5, 0.5 + rng.nextDouble() * 0.5, 0.5 + rng.nextDouble() * 0.5), fuzz = rng.nextDouble() * 0.3)
-                    else -> Dielectric(1.5)
-                }
-                world.add(Sphere(center, 0.15, mat))
-            }
-        }
+        // Два куба внутри — классический элемент Cornell Box
+        // Короткий куб
+        world.add(Box(Vec3(130.0, 0.0, 65.0),  Vec3(295.0, 165.0, 230.0), white))
+        // Высокий куб
+        world.add(Box(Vec3(265.0, 0.0, 295.0), Vec3(430.0, 330.0, 460.0), white))
 
         return world
+    }
+
+    private fun Vec3.toArgb(): Int {
+        val r = (x * 255.99).toInt().coerceIn(0, 255)
+        val g = (y * 255.99).toInt().coerceIn(0, 255)
+        val b = (z * 255.99).toInt().coerceIn(0, 255)
+        return android.graphics.Color.rgb(r, g, b)
     }
 }
